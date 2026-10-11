@@ -11,6 +11,8 @@ Postroom is a distraction-free posting workspace for preparing content for Insta
 
 The default app has no backend dependency and makes no paid API calls. Post handoffs are free: X opens a prefilled compose intent; Instagram and Substack Notes open their site and copy the selected platform text so it can be pasted. The final review and publish action happens on the platform.
 
+The composer includes platform-specific readiness checks and a final review before direct publishing. Its local Instagram writing toolkit shows caption character, word, and line counts, offers optional cursor-position writing cues, and previews image framing while preserving the original image. Image uploads are restricted to JPEG, PNG, and WebP up to 1.5 MB. No third-party proofreader is currently called, so draft text stays in Postroom unless you choose to copy or publish it.
+
 Optional direct publishing connectors are included for X and Instagram. They use OAuth and Supabase Edge Functions so provider secrets and user tokens stay server-side. A user can connect an eligible account from Settings; the composer then offers direct publishing for that connected platform. X's usage charges apply to the developer project owner. Instagram requires an eligible Professional account and Meta app permissions. Substack Notes remains on the free handoff path because the official API materials do not document Notes publishing. Direct publishing does not currently schedule posts in the background.
 
 ## Run locally
@@ -23,6 +25,8 @@ npm run dev
 ```
 
 Create a production build with `npm run build`; preview it with `npm run preview`.
+
+Run the automated test suite with `npm test`. Use `npm run test:watch` while developing. The suite covers platform readiness rules, local draft storage recovery, and key composer interactions.
 
 ## Local data
 

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import {
   ArrowDownToLine, ArrowLeft, ArrowUpRight, CalendarDays, Check, ChevronDown,
@@ -8,6 +8,7 @@ import {
 import type { User } from '@supabase/supabase-js';
 import { supabase } from './lib/supabase';
 import { readDrafts, writeDrafts } from './lib/storage';
+import { getPlatformReadiness } from './lib/posting';
 import { freshDraft, platformNames } from './types';
 import type { Page, Platform, PostDraft } from './types';
 
@@ -30,6 +31,10 @@ export default function App() {
   const [authMode, setAuthMode] = useState<'in' | 'up'>('in');
   const [syncMessage, setSyncMessage] = useState('Saved on this device');
   const [authBusy, setAuthBusy] = useState(false);
+  const [publishReview, setPublishReview] = useState<Platform | null>(null);
+  const [isPublishing, setIsPublishing] = useState(false);
+  const [instagramFrame, setInstagramFrame] = useState<'original' | 'square' | 'portrait'>('portrait');
+  const editorRef = useRef<HTMLTextAreaElement>(null);
 
   const visibleText = draft.text[activePlatform];
   const previewText = draft.text[previewPlatform];
@@ -182,7 +187,6 @@ export default function App() {
     if (platform === 'x' && text.length > 280) { setToast('This X post is over 280 characters'); return; }
     if (platform === 'x' && draft.media) { setToast('Direct X publishing currently supports text only · use the handoff for images'); return; }
     if (platform === 'instagram' && !draft.media) { setToast('Instagram direct publishing needs an image'); return; }
-    if (platform === 'x' && !confirm('This will use the connected X API project. X API charges are billed to that project owner. Publish this post?')) return;
     setToast(`Publishing to ${labelFor[platform]}…`);
     const { data, error } = await supabase.functions.invoke('platform-publish', { body: { platform, text, media: draft.media?.dataUrl, mediaName: draft.media?.name } });
     if (error || data?.error) { setToast(data?.error ?? error?.message ?? 'Publishing failed'); return; }
@@ -196,11 +200,64 @@ export default function App() {
 
   function handleImage(file?: File) {
     if (!file) return;
-    if (!file.type.startsWith('image/')) { setToast('Choose an image file'); return; }
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) { setToast('Choose a JPEG, PNG, or WebP image'); return; }
     if (file.size > 1_500_000) { setToast('Choose an image under 1.5 MB for local storage'); return; }
     const reader = new FileReader();
-    reader.onload = () => patchDraft({ media: { name: file.name, dataUrl: String(reader.result) } });
+    reader.onload = () => {
+      const dataUrl = String(reader.result);
+      const image = new Image();
+      image.onload = () => patchDraft({ media: { name: file.name, dataUrl, sizeBytes: file.size, width: image.naturalWidth, height: image.naturalHeight } });
+      image.onerror = () => setToast('Could not read that image');
+      image.src = dataUrl;
+    };
     reader.readAsDataURL(file);
+  }
+
+  function insertWritingCue(cue: string) {
+    const editor = editorRef.current;
+    const current = draft.text[activePlatform];
+    const start = editor?.selectionStart ?? current.length;
+    const end = editor?.selectionEnd ?? current.length;
+    const before = current.slice(0, start);
+    const after = current.slice(end);
+    const prefix = before && !/\s$/.test(before) && !/^\s/.test(cue) ? '\n\n' : '';
+    const suffix = after && !/^\s/.test(after) && !/\s$/.test(cue) ? '\n\n' : '';
+    const insertion = `${prefix}${cue}${suffix}`;
+    const next = `${before}${insertion}${after}`;
+    setPlatformText(activePlatform, next);
+    requestAnimationFrame(() => {
+      editorRef.current?.focus();
+      const cursor = start + insertion.length;
+      editorRef.current?.setSelectionRange(cursor, cursor);
+    });
+  }
+
+  function readinessFor(platform: Platform) {
+    return getPlatformReadiness(platform, draft, connections.map((item) => item.platform));
+  }
+
+  function beginPublish(platform: Platform) {
+    const readiness = readinessFor(platform);
+    if (readiness.status === 'Needs a fix') { setToast(readiness.detail); setActivePlatform(platform); setPreviewPlatform(platform); return; }
+    if (readiness.directAvailable) {
+      setPublishReview(platform);
+      return;
+    }
+    void publishHandoff(platform);
+  }
+
+  async function confirmPublish() {
+    if (!publishReview) return;
+    const platform = publishReview;
+    setIsPublishing(true);
+    try {
+      await publishDirect(platform);
+      setPublishReview(null);
+    } catch {
+      setToast('Publishing could not be completed · your draft is still saved');
+    } finally {
+      setIsPublishing(false);
+    }
   }
 
   function exportBackup() {
@@ -242,6 +299,9 @@ export default function App() {
     calendar: { title: 'Plan your next post.', subtitle: 'A simple list of planned posts. Publishing still happens in each platform.', crumb: 'Planner' },
     settings: { title: 'Keep it yours.', subtitle: 'Your writing stays private and under your control.', crumb: 'Settings' },
   };
+  const wordCount = visibleText.trim() ? visibleText.trim().split(/\s+/).length : 0;
+  const lineCount = visibleText ? visibleText.split('\n').length : 0;
+  const longSentenceCount = visibleText.split(/[.!?]+/).filter((sentence) => sentence.trim().split(/\s+/).filter(Boolean).length > 24).length;
 
   return <div className="app-shell">
     <aside className="sidebar">
@@ -254,7 +314,7 @@ export default function App() {
       </nav>
       <div className="side-rule" />
       <div className="side-label">POST TO</div>
-      {platforms.map((platform) => <div className="side-platform" key={platform}><PlatformMark platform={platform} /><span>{labelFor[platform]}</span><span className="manual">MANUAL</span></div>)}
+      {platforms.map((platform) => <div className="side-platform" key={platform}><PlatformMark platform={platform} /><span>{labelFor[platform]}</span><span className="manual">{connections.some((item) => item.platform === platform) ? 'CONNECTED' : 'HANDOFF'}</span></div>)}
       <div className="sidebar-bottom"><div className="quiet-note">No feeds. No scrolling.<br />Just your next post.</div><button className="side-button" onClick={() => setPage('settings')}><Settings2 size={16} /> Settings</button></div>
     </aside>
 
@@ -268,18 +328,21 @@ export default function App() {
           <div className="field-label">Choose destinations</div>
           <div className="platform-pills">{platforms.map((platform) => <button key={platform} className={`platform-pill ${draft.platforms.includes(platform) ? 'selected' : ''}`} onClick={() => togglePlatform(platform)} aria-pressed={draft.platforms.includes(platform)}><span className="check-box">{draft.platforms.includes(platform) && <Check size={11} />}</span><PlatformMark platform={platform} />{labelFor[platform]}</button>)}</div>
           <div className="editor-tabs" role="tablist" aria-label="Platform versions">{draft.platforms.map((platform) => <button key={platform} role="tab" aria-selected={activePlatform === platform} className={activePlatform === platform ? 'active' : ''} onClick={() => setActivePlatform(platform)}>{labelFor[platform]}</button>)}</div>
-          <div className="field-row"><label className="field-label" htmlFor="post-copy">Your {activePlatform === 'substack' ? 'Note' : 'post'}</label>{activePlatform === 'x' && <span className={`char-count ${visibleText.length > 280 ? 'over' : ''}`}>{visibleText.length} / 280</span>}</div>
-          <div className="text-area-wrap"><textarea id="post-copy" value={visibleText} onChange={(event) => setPlatformText(activePlatform, event.target.value)} placeholder={activePlatform === 'substack' ? 'A thought worth sharing…' : 'What would you like to share?'} maxLength={activePlatform === 'x' ? 5000 : undefined} /></div>
-          <div className="editor-tools"><label className="button button-light upload-button"><ImagePlus size={15} />{draft.media ? 'Replace image' : 'Add image'}<input type="file" accept="image/*" onChange={(event) => handleImage(event.target.files?.[0])} /></label><span className="helper-text">Images are kept with this draft on your device.</span><button className="icon-button" title="Copy this version" onClick={() => void copyText(visibleText)}><Copy size={15} /></button></div>
-          {draft.media && <div className="media-preview"><img src={draft.media.dataUrl} alt="Selected post media" /><div className="media-caption"><span>{draft.media.name}</span><div><button className="text-button" onClick={downloadMedia}><ArrowDownToLine size={14} /> Download</button><button className="text-button danger" onClick={() => patchDraft({ media: undefined })}><Trash2 size={14} /> Remove</button></div></div></div>}
+          <div className="field-row"><label className="field-label" htmlFor="post-copy">Your {activePlatform === 'substack' ? 'Note' : activePlatform === 'instagram' ? 'Instagram caption' : 'X post'}</label>{activePlatform === 'x' && <span className={`char-count ${visibleText.length > 280 ? 'over' : ''}`}>{visibleText.length} / 280</span>}</div>
+          <div className="text-area-wrap"><textarea ref={editorRef} id="post-copy" value={visibleText} onChange={(event) => setPlatformText(activePlatform, event.target.value)} placeholder={activePlatform === 'substack' ? 'A thought worth sharing…' : activePlatform === 'instagram' ? 'Start with the line you want people to notice…' : 'What would you like to share?'} maxLength={activePlatform === 'x' ? 5000 : undefined} /></div>
+          <div className="writing-stats"><span>{visibleText.length} characters</span><span>{wordCount} {wordCount === 1 ? 'word' : 'words'}</span><span>{lineCount} {lineCount === 1 ? 'line' : 'lines'}</span>{activePlatform === 'instagram' && longSentenceCount > 0 && <span className="writing-hint">{longSentenceCount} long {longSentenceCount === 1 ? 'sentence' : 'sentences'} to review</span>}</div>
+          {activePlatform === 'instagram' && <details className="writing-toolbox"><summary>Caption toolkit <ChevronDown size={14} /></summary><p>Optional cues. Insert at the cursor, then write in your own voice.</p><div className="cue-buttons"><button type="button" onClick={() => insertWritingCue('Opening line')}>Opening line</button><button type="button" onClick={() => insertWritingCue('\n\nMain thought')}>Main thought</button><button type="button" onClick={() => insertWritingCue('\n\nWhat should the reader do next?')}>Call to action</button><button type="button" onClick={() => insertWritingCue('\n\n#')}>Hashtag block</button></div><div className="toolkit-note">Local check: keep the first line clear, break up long paragraphs, and include only the parts that fit this post.</div></details>}
+          <div className="editor-tools"><label className="button button-light upload-button"><ImagePlus size={15} />{draft.media ? 'Replace image' : 'Add image'}<input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => handleImage(event.target.files?.[0])} /></label><span className="helper-text">JPEG, PNG, or WebP · up to 1.5 MB · kept with this draft on your device.</span><button className="icon-button" title="Copy this version" onClick={() => void copyText(visibleText)}><Copy size={15} /></button></div>
+          {draft.media && <div className="media-preview"><img src={draft.media.dataUrl} alt="Selected post media" /><div className="media-caption"><span>{draft.media.name}<small>{draft.media.width && draft.media.height ? ` · ${draft.media.width} × ${draft.media.height}` : ''}{draft.media.sizeBytes ? ` · ${(draft.media.sizeBytes / 1024).toFixed(0)} KB` : ''}</small></span><div><button className="text-button" onClick={downloadMedia}><ArrowDownToLine size={14} /> Download</button><button className="text-button danger" onClick={() => patchDraft({ media: undefined })}><Trash2 size={14} /> Remove</button></div></div></div>}
           <div className="editor-divider" />
           <details className="schedule-details"><summary><CalendarDays size={16} /><span>Plan for later</span><ChevronDown size={15} /></summary><div className="schedule-fields"><label>Publish date and time<input type="datetime-local" value={draft.scheduledAt ? draft.scheduledAt.slice(0, 16) : ''} onChange={(event) => patchDraft({ scheduledAt: event.target.value ? new Date(event.target.value).toISOString() : undefined })} /></label><p>This is a reminder in your planner only. The app can’t publish in the background without platform authorization.</p></div></details>
-          <div className="editor-footer"><span className="autosave-note"><span className="save-dot" />Autosaves as you write</span><div className="footer-buttons"><button className="button button-light" onClick={() => setToast('Draft saved automatically')}>Save draft</button><button className="button button-primary" onClick={() => connections.some((item) => item.platform === activePlatform) ? void publishDirect(activePlatform) : void publishHandoff(activePlatform)}>{connections.some((item) => item.platform === activePlatform) ? <>Publish directly <ArrowUpRight size={15} /></> : <>Continue to {activePlatform === 'substack' ? 'Notes' : platformNames[activePlatform]} <ArrowUpRight size={15} /></>}</button></div></div>
+          <div className="editor-footer"><span className="autosave-note"><span className="save-dot" />Autosaves as you write</span><div className="footer-buttons"><button className="button button-light" onClick={() => setToast('Draft saved automatically')}>Save draft</button><button className="button button-primary" onClick={() => beginPublish(activePlatform)}>{readinessFor(activePlatform).directAvailable ? <>Review & publish <ArrowUpRight size={15} /></> : <>Open {activePlatform === 'substack' ? 'Notes' : platformNames[activePlatform]} <ArrowUpRight size={15} /></>}</button></div></div>
         </section>
 
         <div className="right-rail">
-          <section className="panel preview-panel"><div className="preview-heading"><h2>Preview</h2><div className="preview-switch">{draft.platforms.map((platform) => <button key={platform} className={previewPlatform === platform ? 'active' : ''} onClick={() => setPreviewPlatform(platform)}>{platform === 'instagram' ? 'IG' : platform === 'substack' ? 'Notes' : 'X'}</button>)}</div></div><Preview platform={previewPlatform} text={previewText} media={draft.media?.dataUrl} /></section>
-          <section className="panel publish-panel"><div className="publish-icon"><Sparkles size={17} /></div><h3>One last step, on purpose.</h3><p>Postroom keeps the feed out of sight. Review and publish in the platform so you stay in control.</p><div className="handoff-list">{draft.platforms.map((platform) => <button key={platform} onClick={() => void publishHandoff(platform)}><span><PlatformMark platform={platform} />{labelFor[platform]}</span><ArrowUpRight size={15} /></button>)}</div><div className="safe-note">X opens with text prefilled. Instagram and Substack Notes open separately; your text is copied for pasting.</div></section>
+          <section className="panel readiness-panel"><div className="preview-heading"><div><h2>Ready to post?</h2><p className="panel-subtitle">A quick check for each destination.</p></div></div><div className="readiness-list">{draft.platforms.map((platform) => { const result = readinessFor(platform); return <button key={platform} className={`readiness-row ${result.status === 'Needs a fix' ? 'readiness-error' : result.status === 'Review' ? 'readiness-review' : ''}`} onClick={() => { setActivePlatform(platform); setPreviewPlatform(platform); }}><span className="readiness-dot" /><span className="readiness-copy"><b>{labelFor[platform]}</b><small>{result.detail}</small></span><span className="readiness-status">{result.status}</span></button>; })}</div></section>
+          <section className="panel preview-panel"><div className="preview-heading"><h2>Preview</h2><div className="preview-switch">{draft.platforms.map((platform) => <button key={platform} className={previewPlatform === platform ? 'active' : ''} onClick={() => setPreviewPlatform(platform)}>{platform === 'instagram' ? 'IG' : platform === 'substack' ? 'Notes' : 'X'}</button>)}</div></div>{previewPlatform === 'instagram' && draft.media && <div className="frame-control"><label htmlFor="instagram-frame">Image frame</label><select id="instagram-frame" value={instagramFrame} onChange={(event) => setInstagramFrame(event.target.value as 'original' | 'square' | 'portrait')}><option value="portrait">Portrait preview</option><option value="square">Square preview</option><option value="original">Original ratio</option></select><small>Preview only · your original image stays unchanged.</small></div>}<Preview platform={previewPlatform} text={previewText} media={draft.media?.dataUrl} frame={instagramFrame} /></section>
+          <section className="panel publish-panel"><div className="publish-icon"><Sparkles size={17} /></div><h3>One last step, on purpose.</h3><p>Choose a destination, review the post, then publish directly when connected or finish in the platform.</p><div className="handoff-list">{draft.platforms.map((platform) => <button key={platform} onClick={() => void publishHandoff(platform)}><span><PlatformMark platform={platform} />Open {platform === 'substack' ? 'Notes' : labelFor[platform]}</span><ArrowUpRight size={15} /></button>)}</div><div className="safe-note">X opens with text prefilled. Instagram and Substack Notes open separately; your text is copied for pasting.</div></section>
         </div>
       </div>}
 
@@ -297,9 +360,10 @@ export default function App() {
         {!user && supabase && <form className="auth-form" onSubmit={(event) => void submitAuth(event)}><div className="auth-title">{authMode === 'in' ? 'Sign in to sync drafts' : 'Create a sync account'}</div><div className="auth-fields"><input type="email" required autoComplete="email" placeholder="Email address" value={email} onChange={(event) => setEmail(event.target.value)} /><input type="password" required minLength={6} autoComplete={authMode === 'in' ? 'current-password' : 'new-password'} placeholder="Password" value={password} onChange={(event) => setPassword(event.target.value)} /><button className="button button-primary" disabled={authBusy}>{authBusy ? 'Working…' : authMode === 'in' ? 'Sign in' : 'Create account'}</button></div><button type="button" className="text-button" onClick={() => setAuthMode(authMode === 'in' ? 'up' : 'in')}>{authMode === 'in' ? 'Need an account? Create one' : 'Already have an account? Sign in'}</button></form>}
         {!supabase && <div className="setup-hint"><Cloud size={17} /><div><b>Cloud backup is optional</b><span>To enable it, create a Supabase project, copy <code>.env.example</code> to <code>.env</code>, fill in the project URL and anon key, then run the SQL migration included with this project.</span></div></div>}
         <div className="setting-row"><div><b>Delete local drafts</b><span>Remove every draft saved in this browser. A cloud backup is not deleted.</span></div><button className="button button-danger" onClick={() => { if (confirm('Delete all local drafts from this browser?')) { setDrafts([]); writeDrafts([]); setDraft(freshDraft()); setToast('Local drafts cleared'); } }}><Trash2 size={15} /> Clear local drafts</button></div>
-        <div className="disclaimer"><b>Publishing status</b><span>Direct API publishing is intentionally off. X API create-post calls are usage-priced; Meta requires app authorization for Instagram publishing; Substack’s official public API documentation does not describe a Notes publishing endpoint. The platform handoff is free.</span></div>
+        <div className="disclaimer"><b>Publishing status</b><span>Direct publishing is optional and requires provider app setup. X API create-post calls are usage-priced; Meta requires app authorization and an eligible Professional account for Instagram publishing. Substack’s official public API documentation does not describe a Notes publishing endpoint. The platform handoff is free.</span></div>
       </section>}
     </main>
+    {publishReview && <div className="modal-backdrop" role="presentation" onClick={() => !isPublishing && setPublishReview(null)}><section className="publish-review" role="dialog" aria-modal="true" aria-labelledby="publish-review-title" onClick={(event) => event.stopPropagation()}><div className="panel-heading"><h2 id="publish-review-title">Review before publishing</h2><button className="icon-button" aria-label="Close review" onClick={() => !isPublishing && setPublishReview(null)} disabled={isPublishing}>×</button></div><div className="review-destination"><PlatformMark platform={publishReview} /><b>{labelFor[publishReview]}</b><span>{connections.find((item) => item.platform === publishReview)?.username ? `@${connections.find((item) => item.platform === publishReview)?.username}` : 'Connected account'}</span></div>{publishReview === 'instagram' && draft.media && <img className="review-image" src={draft.media.dataUrl} alt="Image to publish" />}<div className="review-caption">{draft.text[publishReview] || <span className="muted">No caption</span>}</div><p className="review-note">{publishReview === 'instagram' ? 'This will publish to the connected Instagram account. Check the image and caption before continuing.' : 'This uses the connected X API project. Usage charges are billed to the project owner.'}</p><div className="review-actions"><button className="button button-light" onClick={() => setPublishReview(null)} disabled={isPublishing}>Cancel</button><button className="button button-primary" onClick={() => void confirmPublish()} disabled={isPublishing}>{isPublishing ? 'Publishing…' : 'Publish now'}</button></div></section></div>}
     {toast && <div className="toast" role="status">{toast}</div>}
   </div>;
 }
@@ -314,12 +378,13 @@ function PlatformMark({ platform }: { platform: Platform }) {
   return <span className="substack-mark">S</span>;
 }
 
-function Preview({ platform, text, media }: { platform: Platform; text: string; media?: string }) {
+function Preview({ platform, text, media, frame = 'original' }: { platform: Platform; text: string; media?: string; frame?: 'original' | 'square' | 'portrait' }) {
+  const image = media && <img className={`social-media ${platform === 'instagram' ? `instagram-frame ${frame}` : ''}`} src={media} alt="Post preview" />;
+  const caption = <div className={`social-copy ${!text ? 'placeholder' : ''}`}>{text || 'Your post will appear here as you write.'}</div>;
   return <div className={`social-preview ${platform}`}>
     <div className="social-account"><div className={`social-avatar ${platform}`}>{platform === 'substack' ? 'Y' : 'Y'}</div><div><b>Your account</b><span>{platform === 'x' ? '@yourhandle · now' : platform === 'substack' ? 'Your publication' : '@yourhandle'}</span></div><MoreHorizontal size={16} /></div>
-    <div className={`social-copy ${!text ? 'placeholder' : ''}`}>{text || 'Your post will appear here as you write.'}</div>
-    {media && <img className="social-media" src={media} alt="Post preview" />}
-    <div className="social-actions"><span>{platform === 'instagram' ? '♡　◯　↗' : platform === 'x' ? '♡　↻　↗' : '♡　↗'}</span><small>{labelFor[platform]} preview</small></div>
+    {platform === 'instagram' ? <>{image}<div className="instagram-caption"><b>yourhandle</b> {text || <span className="placeholder">Your caption will appear here…</span>}</div></> : <>{caption}{image}</>}
+    <div className="social-actions"><span>{platform === 'instagram' ? '♡　◯　↗' : platform === 'x' ? '♡　↻　↗' : '♡　↗'}</span><small>{platform === 'instagram' ? 'Illustrative Instagram preview' : `${labelFor[platform]} preview`}</small></div>
   </div>;
 }
 

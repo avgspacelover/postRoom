@@ -6,7 +6,7 @@ export type PostDraft = {
   title: string;
   text: Record<Platform, string>;
   platforms: Platform[];
-  media?: { name: string; dataUrl: string };
+  media?: { name: string; dataUrl: string; sizeBytes?: number; width?: number; height?: number; altText?: string };
   scheduledAt?: string;
   updatedAt: string;
 };
