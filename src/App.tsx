@@ -20,6 +20,8 @@ type Connection = { platform: Platform; username?: string; expires_at?: string }
 export default function App() {
   const [page, setPage] = useState<Page>('compose');
   const [drafts, setDrafts] = useState<PostDraft[]>(readDrafts);
+  const [draftSearch, setDraftSearch] = useState('');
+  const [draftPlatformFilter, setDraftPlatformFilter] = useState<Platform | 'all'>('all');
   const [draft, setDraft] = useState<PostDraft>(freshDraft);
   const [activePlatform, setActivePlatform] = useState<Platform>('instagram');
   const [previewPlatform, setPreviewPlatform] = useState<Platform>('instagram');
@@ -42,6 +44,13 @@ export default function App() {
     () => drafts.filter((item) => item.scheduledAt).sort((a, b) => (a.scheduledAt ?? '').localeCompare(b.scheduledAt ?? '')),
     [drafts],
   );
+  const filteredDrafts = useMemo(() => {
+    const query = draftSearch.trim().toLocaleLowerCase();
+    return drafts
+      .filter((item) => draftPlatformFilter === 'all' || item.platforms.includes(draftPlatformFilter))
+      .filter((item) => !query || [item.title, ...platforms.map((platform) => item.text[platform])].some((value) => value.toLocaleLowerCase().includes(query)))
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }, [drafts, draftPlatformFilter, draftSearch]);
 
   useEffect(() => {
     if (!supabase) return;
@@ -144,6 +153,26 @@ export default function App() {
     if (draft.id === id) newDraft();
     if (user && supabase) supabase.from('postroom_drafts').delete().eq('id', id).eq('user_id', user.id);
     setToast('Draft deleted');
+  }
+
+  function duplicateDraft(item: PostDraft) {
+    const copy: PostDraft = {
+      ...item,
+      id: crypto.randomUUID(),
+      title: item.title ? `${item.title} (copy)` : `${summaryFor(item).split('\n')[0].slice(0, 48) || 'Untitled draft'} (copy)`,
+      text: { ...item.text },
+      platforms: [...item.platforms],
+      media: item.media ? { ...item.media } : undefined,
+      updatedAt: new Date().toISOString(),
+    };
+    const next = [copy, ...drafts];
+    setDrafts(next);
+    try { writeDrafts(next); } catch { setSyncMessage('Browser storage full · export a backup'); }
+    if (user && supabase) {
+      supabase.from('postroom_drafts').upsert({ id: copy.id, user_id: user.id, draft: copy, updated_at: copy.updatedAt })
+        .then(({ error }) => { if (error) setSyncMessage('Local save · cloud sync needs setup'); });
+    }
+    setToast('Draft duplicated');
   }
 
   async function copyText(text: string) {
@@ -346,7 +375,7 @@ export default function App() {
         </div>
       </div>}
 
-      {page === 'drafts' && <section className="panel library-panel"><div className="panel-heading"><div><h2>Draft library</h2><p className="panel-subtitle">Private to this browser{user ? ' · backed up to Supabase' : ''}</p></div><button className="button button-primary" onClick={newDraft}><Plus size={15} /> New draft</button></div>{drafts.length ? <div className="draft-grid">{drafts.slice().sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map((item) => <DraftCard key={item.id} draft={item} open={() => openDraft(item)} remove={() => removeDraft(item.id)} />)}</div> : <Empty title="Nothing drafted yet" copy="Start with one short post, then adapt it for each destination." action={newDraft} />}</section>}
+      {page === 'drafts' && <section className="panel library-panel"><div className="panel-heading"><div><h2>Draft library</h2><p className="panel-subtitle">Private to this browser{user ? ' · backed up to Supabase' : ''}</p></div><button className="button button-primary" onClick={newDraft}><Plus size={15} /> New draft</button></div>{drafts.length ? <><div className="draft-library-tools"><label className="draft-search"><span className="sr-only">Search drafts</span><input type="search" placeholder="Search titles and post text" value={draftSearch} onChange={(event) => setDraftSearch(event.target.value)} /></label><label className="draft-filter"><span className="sr-only">Filter drafts by platform</span><select value={draftPlatformFilter} onChange={(event) => setDraftPlatformFilter(event.target.value as Platform | 'all')}><option value="all">All platforms</option>{platforms.map((platform) => <option key={platform} value={platform}>{labelFor[platform]}</option>)}</select></label></div>{filteredDrafts.length ? <div className="draft-grid">{filteredDrafts.map((item) => <DraftCard key={item.id} draft={item} open={() => openDraft(item)} duplicate={() => duplicateDraft(item)} remove={() => removeDraft(item.id)} />)}</div> : <div className="draft-no-results"><b>No matching drafts</b><span>Try another search or platform.</span></div>}</> : <Empty title="Nothing drafted yet" copy="Start with one short post, then adapt it for each destination." action={newDraft} />}</section>}
 
       {page === 'calendar' && <section className="panel library-panel"><div className="panel-heading"><div><h2>Planned posts</h2><p className="panel-subtitle">A quiet list of what you intend to publish.</p></div><button className="button button-primary" onClick={newDraft}><Plus size={15} /> Plan a post</button></div>{scheduled.length ? <div className="schedule-list">{scheduled.map((item) => <div className="schedule-row" key={item.id}><div className="schedule-date"><b>{new Date(item.scheduledAt!).toLocaleDateString(undefined, { day: '2-digit' })}</b><span>{new Date(item.scheduledAt!).toLocaleDateString(undefined, { month: 'short' })}</span></div><div className="schedule-copy"><b>{summaryFor(item)}</b><span>{item.platforms.map((platform) => labelFor[platform]).join(' · ')}</span></div><time>{new Date(item.scheduledAt!).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}</time><button className="icon-button" aria-label="Edit scheduled post" onClick={() => openDraft(item)}><PenLine size={15} /></button></div>)}</div> : <Empty title="Your planner is clear" copy="Choose “Plan for later” in the editor to add a reminder here." action={newDraft} />}</section>}
 
@@ -388,8 +417,8 @@ function Preview({ platform, text, media, frame = 'original' }: { platform: Plat
   </div>;
 }
 
-function DraftCard({ draft, open, remove }: { draft: PostDraft; open: () => void; remove: () => void }) {
-  return <article className="draft-card"><button className="draft-open" onClick={open}><div className="draft-card-top"><div className="draft-platforms">{draft.platforms.map((platform) => <PlatformMark key={platform} platform={platform} />)}</div><span>{draft.scheduledAt ? 'PLANNED' : 'DRAFT'}</span></div><h3>{draft.title || summaryFor(draft).split('\n')[0].slice(0, 58)}</h3><p>{summaryFor(draft)}</p><div className="draft-card-foot">Updated {new Date(draft.updatedAt).toLocaleDateString()} <ArrowUpRight size={14} /></div></button><button className="draft-delete" aria-label="Delete draft" onClick={remove}><Trash2 size={14} /></button></article>;
+function DraftCard({ draft, open, duplicate, remove }: { draft: PostDraft; open: () => void; duplicate: () => void; remove: () => void }) {
+  return <article className="draft-card"><button className="draft-open" onClick={open}><div className="draft-card-top"><div className="draft-platforms">{draft.platforms.map((platform) => <PlatformMark key={platform} platform={platform} />)}</div><span>{draft.scheduledAt ? 'PLANNED' : 'DRAFT'}</span></div><h3>{draft.title || summaryFor(draft).split('\n')[0].slice(0, 58)}</h3><p>{summaryFor(draft)}</p><div className="draft-card-foot">Updated {new Date(draft.updatedAt).toLocaleDateString()} <ArrowUpRight size={14} /></div></button><button className="draft-duplicate" aria-label="Duplicate draft" title="Duplicate draft" onClick={duplicate}><Copy size={13} /></button><button className="draft-delete" aria-label="Delete draft" onClick={remove}><Trash2 size={14} /></button></article>;
 }
 
 function Empty({ title, copy, action }: { title: string; copy: string; action: () => void }) {

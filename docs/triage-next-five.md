@@ -6,8 +6,8 @@ Triage balances user delight and task frequency against implementation effort, r
 | --- | --- | ---: | ---: | ---: | --- | --- |
 | 1 | Posting readiness and publish guardrails | 5 | 3 | 3 | **P1 · Built** | Prevents avoidable mistakes at the highest-consequence moment; usability validation remains. |
 | 2 | In-editor content toolkit | 5 | 3 | 3 | **P2 · Built** | Adds local editing aids; usability validation remains and third-party proofing is deferred. |
-| 3 | Draft search and reuse | 4 | 2 | 1 | **P2 · Next** | Frequent, low-cost improvement to the core draft library. |
-| 4 | Media preflight and accessibility | 4 | 3 | 3 | **P3 · Later** | Reduces media friction and improves accessible posting without adding a service. |
+| 3 | Draft search and reuse | 4 | 2 | 1 | **P2 · Built** | Frequent, low-cost improvement to the core draft library. |
+| 4 | Media preflight and accessibility | 4 | 3 | 3 | **P3 · Next** | Reduces media friction and improves accessible posting without adding a service. |
 | 5 | Planner reminders | 4 | 3 | 3 | **P3 · Later** | Closes the gap between planning and posting; define browser-closed behavior honestly. |
 
 ## Triage notes
@@ -30,10 +30,10 @@ Triage balances user delight and task frequency against implementation effort, r
 - **Do not expand into:** Paid AI rewriting, automatic tone rewriting, hidden third-party calls, or claims that suggestions are always correct.
 - **Exit condition:** Users can complete the writing flow without an account or network; usability review confirms that stats, cues, media feedback, and previews improve the draft without crowding the editor.
 
-### 3. Draft search and reuse — P2
+### 3. Draft search and reuse — P2 · built
 
 - **User pain:** As saved drafts grow, finding and reusing an idea becomes slower.
-- **Smallest valuable release:** Search title and platform copy; filter by selected platform; duplicate a draft while keeping the original untouched.
+- **Smallest valuable release:** Search title and platform copy; filter by selected platform; duplicate a draft while keeping the original untouched. The Drafts library now includes all three actions.
 - **Dependencies:** None; works with local storage and Supabase-backed drafts.
 - **Do not expand into:** Folders, collaboration, or cloud-only indexing in the first version.
 - **Exit condition:** A user can find and duplicate a chosen draft from the Drafts view without editing the original.

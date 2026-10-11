@@ -12,8 +12,8 @@ Sequence is based on user value, reach, cost, and fit with Postroom's low-distra
 | --- | --- | --- | --- | --- |
 | 1 | Posting readiness and publish guardrails | Know what is ready, what needs attention, and what happens when publishing is clicked | Built · validation pending | Users can identify direct publish versus handoff and resolve a seeded issue without help |
 | 2 | In-editor content toolkit | Improve clarity and polish with practical writing tools while staying in the compose flow | Built · validation pending | Users apply useful suggestions and report fewer edits after leaving Postroom |
-| 3 | Draft search and reuse | Find an old idea quickly, then reopen or duplicate it without losing the original | Next | More saved drafts reopened or duplicated; shorter time to find a draft |
-| 4 | Media preflight and accessibility | Catch image issues before leaving Postroom and add useful image descriptions | Later | Fewer media-related handoff failures; image descriptions are present where supported |
+| 3 | Draft search and reuse | Find an old idea quickly, then reopen or duplicate it without losing the original | Built | More saved drafts reopened or duplicated; shorter time to find a draft |
+| 4 | Media preflight and accessibility | Catch image issues before leaving Postroom and add useful image descriptions | Next | Fewer media-related handoff failures; image descriptions are present where supported |
 | 5 | Planner reminders | Get a timely nudge for a planned post without buying a scheduling service | Later | Planned posts are completed more often; reminder opt-in remains voluntary |
 
 ## Release waves
@@ -24,7 +24,7 @@ The first implementation is in the app: per-platform readiness, explicit handoff
 
 ### Next: make writing better inside the editor
 
-The first implementation adds local writing stats and Instagram caption cues, image metadata, and adjustable feed-frame previews. Usability validation remains. See [the editor toolkit PRD](prd-editor-toolkit.md). Follow with draft search, platform filters, and duplicate. The current toolkit works without signing in or connecting Supabase.
+The first implementation adds local writing stats and Instagram caption cues, image metadata, and adjustable feed-frame previews. Usability validation remains. See [the editor toolkit PRD](prd-editor-toolkit.md). Draft search, platform filters, and duplication are now included in the Drafts library. These tools work without signing in or connecting Supabase.
 
 ### Later: improve the content workflow
 
