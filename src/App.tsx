@@ -14,6 +14,7 @@ import type { Page, Platform, PostDraft } from './types';
 const platforms: Platform[] = ['instagram', 'x', 'substack'];
 const labelFor: Record<Platform, string> = { instagram: 'Instagram', x: 'X', substack: 'Substack Notes' };
 const summaryFor = (draft: PostDraft) => draft.text[draft.platforms[0] ?? 'instagram'] || 'Untitled draft';
+type Connection = { platform: Platform; username?: string; expires_at?: string };
 
 export default function App() {
   const [page, setPage] = useState<Page>('compose');
@@ -23,6 +24,7 @@ export default function App() {
   const [previewPlatform, setPreviewPlatform] = useState<Platform>('instagram');
   const [toast, setToast] = useState('');
   const [user, setUser] = useState<User | null>(null);
+  const [connections, setConnections] = useState<Connection[]>([]);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [authMode, setAuthMode] = useState<'in' | 'up'>('in');
@@ -41,6 +43,23 @@ export default function App() {
     supabase.auth.getUser().then(({ data }) => setUser(data.user));
     const { data } = supabase.auth.onAuthStateChange((_event, session) => setUser(session?.user ?? null));
     return () => data.subscription.unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!user || !supabase) { setConnections([]); return; }
+    supabase.functions.invoke('platform-connections').then(({ data, error }) => {
+      if (error) { setSyncMessage('Cloud backup connected · publisher setup needed'); return; }
+      setConnections((data?.connections ?? []) as Connection[]);
+    });
+  }, [user]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const result = params.get('postroom_connection');
+    if (result) setPage('settings');
+    if (result === 'connected') setToast(`${params.get('platform') === 'instagram' ? 'Instagram' : 'X'} connected for direct publishing`);
+    if (result === 'error') setToast(`Account connection failed: ${params.get('reason') ?? 'try again'}`);
+    if (result) { params.delete('postroom_connection'); params.delete('platform'); params.delete('reason'); const clean = `${window.location.pathname}${params.size ? `?${params}` : ''}${window.location.hash}`; window.history.replaceState({}, '', clean); }
   }, []);
 
   useEffect(() => {
@@ -139,6 +158,37 @@ export default function App() {
     catch { setToast(`${platformNames[platform]} opened · copy the text from Postroom`); }
   }
 
+  async function connectPlatform(platform: Platform) {
+    if (platform === 'substack') { setToast('Substack Notes has no supported direct-publishing connection yet'); return; }
+    if (!supabase) { setToast('Add Supabase settings first to enable secure API connections'); setPage('settings'); return; }
+    if (!user) { setToast('Sign in to Supabase before connecting a platform account'); setPage('settings'); return; }
+    setToast(`Connecting ${labelFor[platform]}…`);
+    const { data, error } = await supabase.functions.invoke('platform-oauth-start', { body: { platform } });
+    if (error || !data?.url) { setToast(data?.error ?? error?.message ?? 'Connection service is not deployed'); return; }
+    window.location.assign(data.url as string);
+  }
+
+  async function disconnectPlatform(platform: Platform) {
+    if (!supabase) return;
+    const { error } = await supabase.functions.invoke('platform-connections', { body: { action: 'disconnect', platform } });
+    if (error) { setToast(error.message); return; }
+    setConnections((current) => current.filter((item) => item.platform !== platform));
+    setToast(`${labelFor[platform]} disconnected`);
+  }
+
+  async function publishDirect(platform: Platform) {
+    if (!supabase || !user) { setToast('Sign in and configure Supabase to publish directly'); return; }
+    const text = draft.text[platform]?.trim() ?? '';
+    if (platform === 'x' && text.length > 280) { setToast('This X post is over 280 characters'); return; }
+    if (platform === 'x' && draft.media) { setToast('Direct X publishing currently supports text only · use the handoff for images'); return; }
+    if (platform === 'instagram' && !draft.media) { setToast('Instagram direct publishing needs an image'); return; }
+    if (platform === 'x' && !confirm('This will use the connected X API project. X API charges are billed to that project owner. Publish this post?')) return;
+    setToast(`Publishing to ${labelFor[platform]}…`);
+    const { data, error } = await supabase.functions.invoke('platform-publish', { body: { platform, text, media: draft.media?.dataUrl, mediaName: draft.media?.name } });
+    if (error || data?.error) { setToast(data?.error ?? error?.message ?? 'Publishing failed'); return; }
+    setToast(`${labelFor[platform]} published`);
+  }
+
   function downloadMedia() {
     if (!draft.media) return;
     const link = document.createElement('a'); link.href = draft.media.dataUrl; link.download = draft.media.name || 'postroom-image'; link.click();
@@ -224,7 +274,7 @@ export default function App() {
           {draft.media && <div className="media-preview"><img src={draft.media.dataUrl} alt="Selected post media" /><div className="media-caption"><span>{draft.media.name}</span><div><button className="text-button" onClick={downloadMedia}><ArrowDownToLine size={14} /> Download</button><button className="text-button danger" onClick={() => patchDraft({ media: undefined })}><Trash2 size={14} /> Remove</button></div></div></div>}
           <div className="editor-divider" />
           <details className="schedule-details"><summary><CalendarDays size={16} /><span>Plan for later</span><ChevronDown size={15} /></summary><div className="schedule-fields"><label>Publish date and time<input type="datetime-local" value={draft.scheduledAt ? draft.scheduledAt.slice(0, 16) : ''} onChange={(event) => patchDraft({ scheduledAt: event.target.value ? new Date(event.target.value).toISOString() : undefined })} /></label><p>This is a reminder in your planner only. The app can’t publish in the background without platform authorization.</p></div></details>
-          <div className="editor-footer"><span className="autosave-note"><span className="save-dot" />Autosaves as you write</span><div className="footer-buttons"><button className="button button-light" onClick={() => setToast('Draft saved automatically')}>Save draft</button><button className="button button-primary" onClick={() => void publishHandoff(activePlatform)}>Continue to {activePlatform === 'substack' ? 'Notes' : platformNames[activePlatform]} <ArrowUpRight size={15} /></button></div></div>
+          <div className="editor-footer"><span className="autosave-note"><span className="save-dot" />Autosaves as you write</span><div className="footer-buttons"><button className="button button-light" onClick={() => setToast('Draft saved automatically')}>Save draft</button><button className="button button-primary" onClick={() => connections.some((item) => item.platform === activePlatform) ? void publishDirect(activePlatform) : void publishHandoff(activePlatform)}>{connections.some((item) => item.platform === activePlatform) ? <>Publish directly <ArrowUpRight size={15} /></> : <>Continue to {activePlatform === 'substack' ? 'Notes' : platformNames[activePlatform]} <ArrowUpRight size={15} /></>}</button></div></div>
         </section>
 
         <div className="right-rail">
@@ -237,7 +287,12 @@ export default function App() {
 
       {page === 'calendar' && <section className="panel library-panel"><div className="panel-heading"><div><h2>Planned posts</h2><p className="panel-subtitle">A quiet list of what you intend to publish.</p></div><button className="button button-primary" onClick={newDraft}><Plus size={15} /> Plan a post</button></div>{scheduled.length ? <div className="schedule-list">{scheduled.map((item) => <div className="schedule-row" key={item.id}><div className="schedule-date"><b>{new Date(item.scheduledAt!).toLocaleDateString(undefined, { day: '2-digit' })}</b><span>{new Date(item.scheduledAt!).toLocaleDateString(undefined, { month: 'short' })}</span></div><div className="schedule-copy"><b>{summaryFor(item)}</b><span>{item.platforms.map((platform) => labelFor[platform]).join(' · ')}</span></div><time>{new Date(item.scheduledAt!).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}</time><button className="icon-button" aria-label="Edit scheduled post" onClick={() => openDraft(item)}><PenLine size={15} /></button></div>)}</div> : <Empty title="Your planner is clear" copy="Choose “Plan for later” in the editor to add a reminder here." action={newDraft} />}</section>}
 
-      {page === 'settings' && <section className="panel settings-panel"><div className="settings-intro"><div className="settings-icon"><Settings2 size={19} /></div><div><h2>Privacy and backups</h2><p>Postroom does not collect your platform passwords or session cookies. Drafts stay in your browser unless you choose cloud backup.</p></div></div><div className="setting-row"><div><b>Local drafts</b><span>Stored in this browser with local storage. Export a backup before switching devices.</span></div><div className="setting-actions"><button className="button button-light" onClick={exportBackup}><ArrowDownToLine size={15} /> Export</button><label className="button button-light upload-button"><Upload size={15} /> Import<input type="file" accept="application/json,.json" onChange={(event) => importBackup(event.target.files?.[0])} /></label></div></div>
+      {page === 'settings' && <section className="panel settings-panel"><div className="settings-intro"><div className="settings-icon"><Settings2 size={19} /></div><div><h2>Privacy and backups</h2><p>Postroom does not collect your platform passwords or session cookies. Drafts stay in your browser unless you choose cloud backup.</p></div></div>
+        <div className="integration-section"><div className="integration-head"><div><h3>Optional direct publishing</h3><p>Free handoff is always available. Connect an official API account if you want direct publishing and accept its setup or usage costs.</p></div><span className="integration-mode">{connections.length ? `${connections.length} CONNECTED` : 'OPTIONAL'}</span></div><div className="integration-cards">
+          {(['x', 'instagram'] as Platform[]).map((platform) => { const connection = connections.find((item) => item.platform === platform); return <div className="integration-card" key={platform}><div className="integration-platform"><PlatformMark platform={platform} /><b>{labelFor[platform]}</b></div><p>{platform === 'x' ? 'OAuth connection. X API usage is billed to the developer project owner.' : 'Meta OAuth. Requires an eligible Instagram Professional account and app permissions.'}</p><div className="integration-bottom"><span className={connection ? 'connected-status' : 'pending-status'}>{connection ? `Connected${connection.username ? ` · @${connection.username}` : ''}` : supabase ? user ? 'Not connected' : 'Sign in required' : 'Backend setup required'}</span>{connection ? <button className="text-button danger" onClick={() => void disconnectPlatform(platform)}>Disconnect</button> : <button className="button button-light" onClick={() => void connectPlatform(platform)} disabled={!supabase || !user}>Connect</button>}</div></div>; })}
+          <div className="integration-card substack-card"><div className="integration-platform"><PlatformMark platform="substack" /><b>Substack Notes</b></div><p>Keep using the free handoff. Substack’s published developer API doesn’t document Note publishing.</p><div className="integration-bottom"><span className="pending-status">Handoff only</span><button className="button button-light" onClick={() => void publishHandoff('substack')}>Open Notes</button></div></div>
+        </div>{!supabase && <div className="integration-footnote">To enable account connections, configure Supabase and deploy the included Edge Functions. Provider app credentials stay in Supabase secrets, never in this website.</div>}</div>
+        <div className="setting-row"><div><b>Local drafts</b><span>Stored in this browser with local storage. Export a backup before switching devices.</span></div><div className="setting-actions"><button className="button button-light" onClick={exportBackup}><ArrowDownToLine size={15} /> Export</button><label className="button button-light upload-button"><Upload size={15} /> Import<input type="file" accept="application/json,.json" onChange={(event) => importBackup(event.target.files?.[0])} /></label></div></div>
         <div className="setting-row"><div><b>Optional Supabase cloud backup</b><span>{supabase ? user ? `Signed in as ${user.email ?? 'your account'}. ${syncMessage}.` : 'Connect your own Supabase project to sync drafts across devices.' : 'Not configured. The app works fully in local-only mode.'}</span></div>{user ? <button className="button button-light" onClick={() => void signOut()}><LogOut size={15} /> Sign out</button> : null}</div>
         {!user && supabase && <form className="auth-form" onSubmit={(event) => void submitAuth(event)}><div className="auth-title">{authMode === 'in' ? 'Sign in to sync drafts' : 'Create a sync account'}</div><div className="auth-fields"><input type="email" required autoComplete="email" placeholder="Email address" value={email} onChange={(event) => setEmail(event.target.value)} /><input type="password" required minLength={6} autoComplete={authMode === 'in' ? 'current-password' : 'new-password'} placeholder="Password" value={password} onChange={(event) => setPassword(event.target.value)} /><button className="button button-primary" disabled={authBusy}>{authBusy ? 'Working…' : authMode === 'in' ? 'Sign in' : 'Create account'}</button></div><button type="button" className="text-button" onClick={() => setAuthMode(authMode === 'in' ? 'up' : 'in')}>{authMode === 'in' ? 'Need an account? Create one' : 'Already have an account? Sign in'}</button></form>}
         {!supabase && <div className="setup-hint"><Cloud size={17} /><div><b>Cloud backup is optional</b><span>To enable it, create a Supabase project, copy <code>.env.example</code> to <code>.env</code>, fill in the project URL and anon key, then run the SQL migration included with this project.</span></div></div>}
@@ -250,7 +305,7 @@ export default function App() {
 }
 
 function SideButton({ icon, label, count, active, onClick }: { icon: ReactNode; label: string; count?: number; active: boolean; onClick: () => void }) {
-  return <button className={`side-button ${active ? 'active' : ''}`} onClick={onClick}><span className="side-icon">{icon}</span>{label}{count !== undefined && <small>{count}</small>}</button>;
+  return <button className={`side-button ${active ? 'active' : ''}`} onClick={onClick}><span className="side-icon">{icon}</span><span className="nav-copy">{label}</span>{count !== undefined && <small>{count}</small>}</button>;
 }
 
 function PlatformMark({ platform }: { platform: Platform }) {

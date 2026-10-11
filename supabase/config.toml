@@ -1,0 +1,5 @@
+[project]
+id = "postroom"
+
+[functions.platform-oauth-callback]
+verify_jwt = false
